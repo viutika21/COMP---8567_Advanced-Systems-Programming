@@ -1,0 +1,457 @@
+/* FinalProject mirror file submitted by Viutika Rathod 110094621 Section 3*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <dirent.h>
+
+#define P_ORT 7001
+#define BUF_SIZE 1024
+#define MAX_encountred_files 1000
+
+// Storng encounterd file names
+char* encountred_files[MAX_encountred_files] = { NULL };
+int num_encountred_files = 0;
+
+/* Functn to search for file in subdirectries */
+void srch_dirctory(char* fil_path, char* fil_name, char* commandPassd) {
+    DIR* dirctry;                     // Directry stream                             
+    struct dirent* fil_entry;        // Directry entry structure
+    struct stat info_st;            // File infrmation structure
+
+    // Opening directry
+    if ((dirctry = opendir(fil_path)) == NULL) {
+        printf("Opening the directory was not successful. %s\n", fil_path);
+        return;
+    }
+
+    // Loopng through directry entries
+    while ((fil_entry = readdir(dirctry)) != NULL) {
+   
+        // Skippng current and parent directry entries
+        if (strcmp(fil_entry->d_name, ".") == 0 || strcmp(fil_entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        // Creatng full path of current entry
+        char ful_path[1024];
+        snprintf(ful_path, sizeof(ful_path), "%s/%s", fil_path, fil_entry->d_name);
+
+         // Gettng file informatn usng lstat
+        if (lstat(ful_path, &info_st) == 0) {
+
+            // Checkng if entry is a directry
+            if (S_ISDIR(info_st.st_mode)) {
+          
+                srch_dirctory(ful_path, fil_name, commandPassd);   // Recursively searchng subdirectries
+            } else if (S_ISREG(info_st.st_mode)) {                 // Checkng if entry is a regular file
+      
+                if (strcmp(fil_entry->d_name, fil_name) == 0) {
+                    time_t c_time = info_st.st_ctime;                                                      // Gettng creation time
+                    sprintf(commandPassd, "%s, %ld, %s\n", ful_path, info_st.st_size, ctime(&c_time));    // Generatng output with file informatn
+                    closedir(dirctry);
+                    return;
+                }
+            }
+        } else {
+            printf("Unable to get information about file %s\n", ful_path);
+        }
+    }
+
+    // Closng directry
+    closedir(dirctry);
+}
+
+// Functn to check if a file has already been encountered
+int isFilEncountred(const char* fil_nme) {
+    for (int l = 0; l < num_encountred_files; l++) {
+        if (strcmp(encountred_files[l], fil_nme) == 0) {
+            return 1; // File is encountered
+        }
+    }
+    return 0; // File is not encountered
+}
+
+// Functn to mark a file as encountered
+void markFilAsEncountred(const char* fil_nme) {
+    if (num_encountred_files < MAX_encountred_files) {
+        encountred_files[num_encountred_files] = strdup(fil_nme);
+        num_encountred_files++;
+    }
+}
+int file_exists(const char *filename) {
+    return access(filename, F_OK) == 0;
+}
+
+void remove_temp_files() {
+    if (file_exists("temp.tar.gz")) {
+        system("rm -f temp.tar.gz");
+    }
+
+    if (file_exists("/home/viutika/ASP/FinalProject")) {
+        system("rm -rf /home/viutika/ASP/FinalProject/home");
+    }
+}
+
+
+void prcs_client_func(int sokfd_con) {
+    char buf_val[1024] = {0};          // Buffer to receive client input
+    char commandPassd[1024] = {0};    // Buffer to store server response
+    char gf_ary[1024]={0};
+
+    while (1) {
+
+        // Clearing buffers and reading client input
+        memset(buf_val, 0, sizeof(buf_val));
+        memset(commandPassd, 0, sizeof(commandPassd));
+        memcpy(gf_ary, buf_val, sizeof(buf_val));
+
+        int val_info_read = read(sokfd_con, buf_val, sizeof(buf_val));
+        buf_val[val_info_read] = '\0';
+
+        // Parsing client input into tokens
+        char* token_val = strtok(buf_val, " ");
+        if (token_val == NULL) {
+            sprintf(commandPassd, "\nIncorrect syntax. Please try once more.\n");
+        } 
+        else if (strcmp(token_val, "filesrch") == 0) {  
+            // Extractng provided file name frm clint input
+            char* fil_name = strtok(NULL, " ");
+            if (fil_name == NULL) {
+                sprintf(commandPassd, "\nUnacceptable syntax. A filename must be provided.\n");
+            } else {
+                // Constructng root path to search for file
+                char root_path_info[1024];
+                sprintf(root_path_info, "/home/viutika");
+
+                 // Buildng the command to search for file in root directory
+                char commandPassd_buf[BUF_SIZE];
+                sprintf(commandPassd_buf, "find %s -maxdepth 1 -name %s -printf \"%%s,%%Tc\n\"",
+                root_path_info, fil_name);
+
+                 // Executng the command and readng output
+                FILE* fp_info = popen(commandPassd_buf, "r");
+                char line_encntred[BUF_SIZE];
+                int fil_found = 0;  // Flag to track if the file found
+                if (fgets(line_encntred, BUF_SIZE, fp_info) != NULL) {
+                    // File found in root directry
+                    sprintf(commandPassd, "\nFound file in root directory.\n%s, %s", fil_name, line_encntred);
+                    fil_found = 1;
+                } else {
+                    sprintf(commandPassd_buf, "find %s -name %s -printf \"%%s,%%Tc\n\"", root_path_info, fil_name);
+                    fp_info = popen(commandPassd_buf, "r");
+                    if (fgets(line_encntred, BUF_SIZE, fp_info) != NULL) {
+                        // File found in the subdirectries
+                        sprintf(commandPassd, "\nFound file in subdirectories.\n%s, %s", fil_name, line_encntred);
+                        fil_found = 1;
+                    } else {
+                        // File not found
+                        sprintf(commandPassd, "\nFile not found.\n");
+                    }
+                }
+        pclose(fp_info);     
+    }
+}
+ else if (strcmp(token_val, "tarfgetz") == 0) {
+
+  // Extractng provided size limits and unzip flag from client input
+    char* size1_of_str = strtok(NULL, " ");
+    char* size2_of_str = strtok(NULL, " ");
+    char* unzip_flg_val = strtok(NULL, " ");
+
+    if (size1_of_str == NULL || size2_of_str == NULL) {
+        sprintf(commandPassd, "\nIncorrect syntax. Please try once more.\n");
+    } else {
+
+        // Convertng size limits to integers
+        int size1_taken = atoi(size1_of_str);
+        int size2_taken = atoi(size2_of_str);
+        if (size1_taken < 0 || size2_taken < 0 || size1_taken > size2_taken) {
+            sprintf(commandPassd, "\nUnacceptable size range. Please try once more.\n");
+        } else {
+
+             // Constructng command to find and compress files withn specified size range
+            remove_temp_files();
+            char commandPassd_buf[BUF_SIZE];
+            sprintf(commandPassd_buf, "find ~ -type f -size +%dk -size -%dk -print0 | xargs -0 tar -czf temp.tar.gz",
+                    size1_taken, size2_taken);
+
+            char complete_command[BUF_SIZE];
+            snprintf(complete_command, sizeof(complete_command), "(%s) > /dev/null 2>&1", commandPassd_buf);
+
+
+            int status_recorded = system(complete_command);
+
+            if (status_recorded == 0) {
+                if (unzip_flg_val != NULL && strcmp(unzip_flg_val, "-u") == 0) {
+                    system("tar -xzf temp.tar.gz");
+                    sprintf(commandPassd, "\nSuccessfully retrieved, compressed, and uncompressed files.\n");
+                } else {
+                    sprintf(commandPassd, "\nSuccessfully retrieved and compressed files. Use the -u flag to unzip.\n");
+                }
+            } else {
+                sprintf(commandPassd, "\nNo files were located.\n");
+            }
+        }
+    }
+}
+ else if (strcmp(token_val, "getdirf") == 0) {
+    // Extractng provided date range and unzip flag from client input
+    char* date1_of_str = strtok(NULL, " ");
+    char* date2_of_str = strtok(NULL, " ");
+    char* unzip_flg_val = strtok(NULL, " ");
+
+    if (date1_of_str == NULL || date2_of_str == NULL) {
+        sprintf(commandPassd, "\nIncorrect syntax. Please try once more. \n");
+    } else if (strcmp(date1_of_str, date2_of_str) > 0) {
+        sprintf(commandPassd, "\nDate range is incorrect. %s is not before %s.\n", date1_of_str, date2_of_str);
+    }             
+    else {
+
+        // Constructng command to find and compress files within specified date range
+        remove_temp_files();
+        char root_path_info[1024];
+        sprintf(root_path_info, "/home/viutika");              
+        char commandPassd_buf[BUF_SIZE];
+        sprintf(commandPassd_buf, "find %s -type f -newermt \"%s\" ! -newermt \"%s\" -print0 | xargs -0 tar -czf temp.tar.gz",
+                root_path_info, date1_of_str, date2_of_str);
+        
+        // Suppress the output of the tar command
+        char complete_command[BUF_SIZE];
+        snprintf(complete_command, sizeof(complete_command), "(%s) > /dev/null 2>&1", commandPassd_buf);
+        int status_recorded = system(complete_command);
+
+        if (status_recorded == 0) {
+            if (unzip_flg_val != NULL && strcmp(unzip_flg_val, "-u") == 0) {
+                system("tar -xzf temp.tar.gz -C /home/viutika/ASP/FinalProject");
+                sprintf(commandPassd, "\nSuccessfully retrieved, compressed, and uncompressed files.\n");
+            } else {
+                sprintf(commandPassd, "\nSuccessfully retrieved and compressed files. Use the -u flag to unzip.\n");
+            }
+        } else {
+            sprintf(commandPassd, "\nNo files were located.\n");
+        }
+    }
+}
+
+else if (strcmp(token_val, "fgets") == 0) {
+    char* file_args_info[4];  // Array to store file arguments
+    int num_files_cnt = 0;    // Count of file arguments provided
+
+    // Extract file arguments from client input
+    for (int l = 0; l < 4; l++) {
+        file_args_info[l] = strtok(NULL, " ");
+        if (file_args_info[l] != NULL) {
+            num_files_cnt++;
+        } else {
+            break;
+        }
+    }     
+
+    char root_path_info[1024];
+    sprintf(root_path_info, "/home/viutika");
+
+    // Constructing command to find files based on file arguments
+    char commandPassd_buf[BUF_SIZE];
+    snprintf(commandPassd_buf, sizeof(commandPassd_buf), "find %s -type f \\( ", root_path_info);
+    for (int l = 0; l < num_files_cnt; l++) {
+        snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf),
+                 "-iname \"%s\"", file_args_info[l]);
+        if (l < num_files_cnt - 1) {
+            snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf), " -o ");
+        }
+    }
+    snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf),
+             " \\) -print0");
+
+    // Execute the find command and capture its output
+    FILE *pipe = popen(commandPassd_buf, "r");
+    if (pipe == NULL) {
+        sprintf(commandPassd, "\nFailed to execute find command.\n");
+        return;
+    }
+
+    // Read and discard the command's output
+    char temp_buf[BUF_SIZE];
+    while (fgets(temp_buf, sizeof(temp_buf), pipe) != NULL) {
+        // Discard the contents of the temporary output
+    }
+    pclose(pipe);
+
+    // Constructing command to compress found files
+    snprintf(commandPassd_buf, sizeof(commandPassd_buf), "find %s -type f \\( ", root_path_info);
+    for (int l = 0; l < num_files_cnt; l++) {
+        snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf),
+                 "-iname \"%s\"", file_args_info[l]);
+        if (l < num_files_cnt - 1) {
+            snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf), " -o ");
+        }
+    }
+    snprintf(commandPassd_buf + strlen(commandPassd_buf), sizeof(commandPassd_buf) - strlen(commandPassd_buf),
+             " \\) -print0 | xargs -0 tar -czf temp.tar.gz -C /home/viutika/ASP/FinalProject");
+
+    // Suppress the output of the tar command
+    char complete_command[BUF_SIZE];
+    snprintf(complete_command, sizeof(complete_command), "(%s) > /dev/null 2>&1", commandPassd_buf);
+
+    int status_recorded = system(complete_command);
+
+    if (status_recorded == 0) {           
+        sprintf(commandPassd, "\nSuccessfully retrieved and compressed files.\n");
+    } else {
+        sprintf(commandPassd, "\nNo file found\n");
+    }
+}
+
+
+ 
+
+ else if (strcmp(token_val, "targzf") == 0) {
+    char* extensns[4] = { NULL };
+    int num_extensns = 0;
+    int unzip_flg_val = 0;
+
+    // Parsng command argumnts for file extensins and unzip flag
+    while (1) {
+        char* arg_val = strtok(NULL, " ");
+        if (arg_val == NULL) {
+            break;
+        }
+
+        if (strcmp(arg_val, "-u") == 0) {
+            unzip_flg_val = 1;
+        } else if (num_extensns < 4) {
+            extensns[num_extensns] = arg_val;
+            num_extensns++;
+        }
+    }
+    if (num_extensns == 0) {
+        sprintf(commandPassd, "\nIncorrect syntax. At least one file extension must be specified.\n");
+    } else if (num_extensns > 4){        
+        sprintf(commandPassd, "\nIncorrect syntax. There can only be four extensions in total.\n");
+    }    
+    else {
+        char root_path_info[1024];
+        sprintf(root_path_info, "/home/viutika");
+
+        char commandPassd_buf[BUF_SIZE];
+        sprintf(commandPassd_buf, "find %s -type f \\( ", root_path_info);
+
+        // Constructng command to find and comprss fils based on extensons
+        remove_temp_files();
+        for (int l = 0; l < num_extensns; l++) {
+            if (!isFilEncountred(extensns[l])) {
+                markFilAsEncountred(extensns[l]);
+
+                sprintf(commandPassd_buf + strlen(commandPassd_buf), "-iname \"*.%s\"", extensns[l]);
+                if (l < num_extensns - 1) {
+                    strcat(commandPassd_buf, " -o ");
+                }
+            }
+        }
+
+        strcat(commandPassd_buf, " \\) -print0 | xargs -0 tar -czf temp.tar.gz");
+        // Suppress the output of the tar command
+        char complete_command[BUF_SIZE];
+        snprintf(complete_command, sizeof(complete_command), "(%s) > /dev/null 2>&1", commandPassd_buf);
+        int status_recorded = system(complete_command);
+        if (status_recorded == 0) {
+            sprintf(commandPassd, "\nSuccessfully retrieved and compressed files.Use the -u flag to unzip.\n");
+            if (unzip_flg_val) {
+                system("tar -xzf temp.tar.gz -C /home/viutika/ASP/FinalProject");
+                sprintf(commandPassd, "\nSuccessfully retrieved, compressed, and uncompressed files.\n");
+            }
+        } else {
+            sprintf(commandPassd, "\nNo file found.\n");
+        }
+    }
+
+    // Clening up memory and countrs for encountred files
+     for (int l = 0; l < num_encountred_files; l++) {
+        free(encountred_files[l]);
+        encountred_files[l] = NULL;
+    }
+    num_encountred_files = 0;
+}
+
+else if (strcmp(token_val, "quit") == 0) {
+            sprintf(commandPassd, "\nGoodbye.\n");
+            break;
+        } else {
+            sprintf(commandPassd, "\nIncorrect syntax. Please try once more. \n");
+        }
+
+        // Closng the socket connection
+        send(sokfd_con, commandPassd, strlen(commandPassd), 0);
+    }
+
+    close(sokfd_con);
+    exit(0);
+}
+
+int main(int arg_c, char const *arg_v[]) {
+    int server_fd_info, new_sockt_info;
+    struct sockaddr_in addres_info;
+    int opt = 1;
+    int addrlen = sizeof(addres_info);
+
+    // Creatng a socket for server
+    if ((server_fd_info = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Configurng socket options
+    if (setsockopt(server_fd_info, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+
+    // Settng up address informatn
+    addres_info.sin_family = AF_INET;
+    addres_info.sin_addr.s_addr = INADDR_ANY;
+    addres_info.sin_port = htons(P_ORT);
+
+    // Bindng server socket to specified address and port
+    if (bind(server_fd_info, (struct sockaddr *)&addres_info, sizeof(addres_info)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Startng to listen for incoming connections
+    if (listen(server_fd_info, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+
+    // Acceptng an incoming connection and create a new socket for communicatn
+    while (1) {
+        if ((new_sockt_info = accept(server_fd_info, (struct sockaddr *)&addres_info, (socklen_t*)&addrlen)) < 0) {
+            perror("accept");
+            exit(EXIT_FAILURE);
+        }
+
+        printf("New client connected. Forking child process...\n");
+       
+        pid_t prcs_id = fork();
+        if (prcs_id == -1) {
+            perror("fork");
+            exit(EXIT_FAILURE);
+        } else if (prcs_id == 0) {  // Child process
+            close(server_fd_info);
+            prcs_client_func(new_sockt_info);
+        } else {  // Parent process
+            close(new_sockt_info);
+            while (waitpid(-1, NULL, WNOHANG) > 0); 
+        }
+    }
+
+    return 0;
+}
